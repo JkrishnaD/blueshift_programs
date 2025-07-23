@@ -8,7 +8,6 @@ use pinocchio::{
 };
 
 entrypoint!(process_instruction);
-nostd_panic_handler!();
 
 pub mod instructions;
 pub use instructions::*;
@@ -26,6 +25,7 @@ fn process_instruction(
 ) -> ProgramResult {
     match instructions_data.split_first() {
         Some((Deposit::DISCRIMINATOR, data)) => Deposit::try_from((data, accounts))?.process(),
+        Some((Withdraw::DISCRIMINATOR, _)) => Withdraw::try_from(accounts)?.process(),
         _ => Err(ProgramError::InvalidInstructionData),
     }
 }
