@@ -2,7 +2,7 @@ use pinocchio::{program_error::ProgramError, pubkey::Pubkey};
 
 #[repr(C)]
 pub struct Escrow {
-    pub seed: u8,       // to derive the pda account
+    pub seed: u64,      // to derive the pda account
     pub maker: Pubkey,  // the one who makes an escrow
     pub mint_a: Pubkey, // token which is deposited
     pub mint_b: Pubkey, // token requested by maker
@@ -34,7 +34,7 @@ impl Escrow {
     #[inline(always)]
     pub fn set_inner(
         &mut self,
-        seed: u8,
+        seed: u64,
         maker: Pubkey,
         mint_a: Pubkey,
         mint_b: Pubkey,
