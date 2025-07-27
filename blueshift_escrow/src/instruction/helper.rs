@@ -1,10 +1,20 @@
 use pinocchio::{
-    account_info::AccountInfo, program_error::ProgramError, pubkey::find_program_address,
+    account_info::AccountInfo,
+    instruction::{Seed, Signer},
+    program_error::ProgramError,
+    pubkey::find_program_address,
+    sysvars::{rent::Rent, Sysvar},
 };
+use pinocchio_associated_token_account::instructions::Create;
+use pinocchio_system::instructions::CreateAccount;
 
 // defining the trait for checking the accounts
 pub trait AccountCheck {
     fn check(account: &AccountInfo) -> Result<(), ProgramError>;
+}
+
+pub trait AccountClose {
+    fn close(account: &AccountInfo, destination: &AccountInfo) -> Result<(), ProgramError>;
 }
 
 pub struct SignerAccount;
@@ -97,6 +107,7 @@ pub trait AssociatedTokenCheck {
         mint: &AccountInfo,
     ) -> Result<(), ProgramError>;
 }
+
 // this is to check whether is the token account is associated with a user or not
 impl AssociatedTokenCheck for AssociatedTokenAccount {
     fn check(
@@ -116,5 +127,127 @@ impl AssociatedTokenCheck for AssociatedTokenAccount {
             return Err(ProgramError::InvalidAccountOwner);
         }
         Ok(())
+    }
+}
+
+pub struct ProgramAccount;
+
+impl AccountCheck for ProgramAccount {
+    fn check(account: &AccountInfo) -> Result<(), ProgramError> {
+        if !account.is_owned_by(&crate::ID) {
+            return Err(ProgramError::InvalidAccountOwner);
+        }
+
+        if account.data_len().ne(&crate::state::Escrow::LEN) {
+            return Err(ProgramError::InvalidAccountData);
+        }
+        Ok(())
+    }
+}
+
+pub trait ProgramAccountInit {
+    fn init<'a, T>(
+        payer: &AccountInfo,
+        account: &AccountInfo,
+        seeds: &[Seed<'a>],
+        space: usize,
+    ) -> Result<(), ProgramError>;
+}
+
+impl ProgramAccountInit for ProgramAccount {
+    fn init<'a, T>(
+        payer: &AccountInfo,
+        account: &AccountInfo,
+        seeds: &[Seed<'a>],
+        space: usize,
+    ) -> Result<(), ProgramError> {
+        let lamports = Rent::get()?.minimum_balance(space);
+
+        let signer = [Signer::from(seeds)];
+
+        CreateAccount {
+            from: payer,
+            to: account,
+            lamports,
+            owner: &crate::ID,
+            space: space as u64,
+        }
+        .invoke_signed(&signer)?;
+
+        Ok(())
+    }
+}
+
+pub trait AssociatedTokenAccountInit {
+    fn init(
+        account: &AccountInfo,
+        mint: &AccountInfo,
+        payer: &AccountInfo,
+        owner: &AccountInfo,
+        system_program: &AccountInfo,
+        token_program: &AccountInfo,
+    ) -> Result<(), ProgramError>;
+
+    fn init_if_needed(
+        account: &AccountInfo,
+        mint: &AccountInfo,
+        payer: &AccountInfo,
+        owner: &AccountInfo,
+        system_program: &AccountInfo,
+        token_program: &AccountInfo,
+    ) -> Result<(), ProgramError>;
+}
+
+impl AssociatedTokenAccountInit for AssociatedTokenAccount {
+    fn init(
+        account: &AccountInfo,
+        mint: &AccountInfo,
+        payer: &AccountInfo,
+        owner: &AccountInfo,
+        system_program: &AccountInfo,
+        token_program: &AccountInfo,
+    ) -> Result<(), ProgramError> {
+        Create {
+            account,
+            funding_account: payer,
+            mint,
+            system_program,
+            wallet: owner,
+            token_program,
+        }
+        .invoke()
+    }
+
+    fn init_if_needed(
+        account: &AccountInfo,
+        mint: &AccountInfo,
+        payer: &AccountInfo,
+        owner: &AccountInfo,
+        system_program: &AccountInfo,
+        token_program: &AccountInfo,
+    ) -> Result<(), ProgramError> {
+        // checks if the account is created or not if not it creates
+        match Self::check(account, payer, mint) {
+            Ok(_) => Ok(()),
+            Err(_) => Self::init(account, mint, payer, owner, system_program, token_program),
+        }
+    }
+}
+
+impl AccountClose for ProgramAccount {
+    fn close(account: &AccountInfo, destination: &AccountInfo) -> Result<(), ProgramError> {
+        // here 0xff represents as close or delete so now
+        // as we are assigning the value to the account it marks as close
+        // this code is in the scope because we can have the multiple imutable references but
+        // we need to have only on mutable reference so we are declaring that in a scope
+        {
+            let mut data = account.try_borrow_mut_data()?;
+            data[0] = 0xff;
+        };
+
+        // deducting the rent from the closing account and adding it to the authority account
+        *destination.try_borrow_mut_lamports()? += *account.try_borrow_lamports()?;
+        account.realloc(1, true)?;
+        account.close()
     }
 }
