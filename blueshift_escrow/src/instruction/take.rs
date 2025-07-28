@@ -1,6 +1,6 @@
 use pinocchio::{
     account_info::AccountInfo,
-    entrypoint::ProgramResult,
+    ProgramResult,
     instruction::{Seed, Signer},
     program_error::ProgramError,
 };
