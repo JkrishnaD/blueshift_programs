@@ -6,7 +6,7 @@ pub struct Escrow {
     pub maker: Pubkey,  // the one who makes an escrow
     pub mint_a: Pubkey, // token which is deposited
     pub mint_b: Pubkey, // token requested by maker
-    pub recieve: u64,   // amount of token that maker wants
+    pub receive: u64,   // amount of token that maker wants
     pub bump: [u8; 1],  // pda seed bump
 }
 
@@ -29,6 +29,31 @@ impl Escrow {
         Ok(unsafe { &*core::mem::transmute::<*const u8, *const Self>(bytes.as_ptr()) })
     }
 
+
+    pub fn set_seed(&mut self, seed: u64) {
+        self.seed = seed;
+    }
+
+    pub fn set_maker(&mut self, maker: Pubkey) {
+        self.maker = maker;
+    }
+
+    pub fn set_mint_a(&mut self, mint_a: Pubkey) {
+        self.mint_a = mint_a;
+    }
+
+    pub fn set_mint_b(&mut self, mint_b: Pubkey) {
+        self.mint_b = mint_b;
+    }
+
+    pub fn set_receive(&mut self, receive: u64) {
+        self.receive = receive;
+    }
+
+    pub fn set_bump(&mut self, bump: [u8; 1]) {
+        self.bump = bump;
+    }
+
     // inline is used to copy the function directly into the calling function rather than generating
     // the multiple functions
     #[inline(always)]
@@ -45,7 +70,7 @@ impl Escrow {
         self.maker = maker;
         self.mint_a = mint_a;
         self.mint_b = mint_b;
-        self.recieve = recieve;
+        self.receive = recieve;
         self.bump = bump
     }
 }

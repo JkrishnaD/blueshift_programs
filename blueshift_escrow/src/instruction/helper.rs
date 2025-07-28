@@ -4,103 +4,143 @@ use pinocchio::{
     program_error::ProgramError,
     pubkey::find_program_address,
     sysvars::{rent::Rent, Sysvar},
+    ProgramResult,
 };
 use pinocchio_associated_token_account::instructions::Create;
 use pinocchio_system::instructions::CreateAccount;
+use pinocchio_token::instructions::InitializeMint2;
 
-// defining the trait for checking the accounts
+use crate::PinocchioError;
+
 pub trait AccountCheck {
     fn check(account: &AccountInfo) -> Result<(), ProgramError>;
 }
 
-pub trait AccountClose {
-    fn close(account: &AccountInfo, destination: &AccountInfo) -> Result<(), ProgramError>;
-}
-
+// Used for adding additional checks to the signer account (signer check)
 pub struct SignerAccount;
 
-impl AccountCheck for SignerAccount {
-    // function to verify the signer
-    fn check(account: &AccountInfo) -> Result<(), ProgramError> {
+impl SignerAccount {
+    pub fn check(account: &AccountInfo) -> Result<(), ProgramError> {
         if !account.is_signer() {
-            return Err(ProgramError::InvalidAccountOwner);
-        };
+            return Err(PinocchioError::NotSigner.into());
+        }
         Ok(())
     }
 }
 
 pub struct SystemAccount;
 
-impl AccountCheck for SystemAccount {
-    // function to verify the account is system or not
-    fn check(account: &AccountInfo) -> Result<(), ProgramError> {
-        if account.is_owned_by(&pinocchio_system::ID) {
-            return Err(ProgramError::InvalidAccountOwner);
-        };
-        Ok(())
-    }
-}
-
-// TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb is the token program id
-pub const TOKEN_2022_PROGRAM_ID: [u8; 32] = [
-    0x06, 0xdd, 0xf6, 0xe1, 0xee, 0x75, 0x8f, 0xde, 0x18, 0x42, 0x5d, 0xbc, 0xe4, 0x6c, 0xcd, 0xda,
-    0xb6, 0x1a, 0xfc, 0x4d, 0x83, 0xb9, 0x0d, 0x27, 0xfe, 0xbd, 0xf9, 0x28, 0xd8, 0xa1, 0x8b, 0xfc,
-];
-
-// discriminators for the accounts for the difference between the legacy and the token22 programs
-const TOKEN_2022_ACCOUNT_DISCRIMINATOR_OFFSET: usize = 165;
-pub const TOKEN_2022_MINT_DISCRIMINATOR: u8 = 0x01;
-pub const TOKEN_2022_TOKEN_ACCOUNT_DISCRIMINATOR: u8 = 0x02;
-
-pub struct MintInterface;
-
-// this check is to verify the account is the mint account or not
-impl AccountCheck for MintInterface {
-    fn check(account: &AccountInfo) -> Result<(), ProgramError> {
-        if !account.is_owned_by(&TOKEN_2022_PROGRAM_ID) {
-            if !account.is_owned_by(&pinocchio_token::ID) {
-                return Err(ProgramError::InvalidAccountOwner.into());
-            } else {
-                if account.data_len().ne(&pinocchio_token::state::Mint::LEN) {
-                    return Err(ProgramError::InvalidAccountData.into());
-                }
-            }
-        } else {
-            let data = account.try_borrow_data()?;
-
-            if data.len().ne(&pinocchio_token::state::Mint::LEN) {
-                if data[TOKEN_2022_ACCOUNT_DISCRIMINATOR_OFFSET].ne(&TOKEN_2022_MINT_DISCRIMINATOR)
-                {
-                    return Err(ProgramError::InvalidAccountData.into());
-                }
-            }
+impl SystemAccount {
+    pub fn check(account: &AccountInfo) -> Result<(), ProgramError> {
+        if !account.is_owned_by(&pinocchio_system::ID) {
+            return Err(PinocchioError::InvalidOwner.into());
         }
+
         Ok(())
     }
 }
 
+// Used for adding additional checks and functions to the mint account (owner and data length checks, init, init_if_needed)
+pub struct MintAccount;
+
+impl AccountCheck for MintAccount {
+    fn check(account: &AccountInfo) -> Result<(), ProgramError> {
+        if !account.is_owned_by(&pinocchio_token::ID) {
+            return Err(PinocchioError::InvalidOwner.into());
+        }
+
+        if account.data_len() != pinocchio_token::state::Mint::LEN {
+            return Err(PinocchioError::InvalidAccountData.into());
+        }
+
+        Ok(())
+    }
+}
+
+pub trait MintInit {
+    fn init(
+        account: &AccountInfo,
+        payer: &AccountInfo,
+        decimals: u8,
+        mint_authority: &[u8; 32],
+        freeze_authority: Option<&[u8; 32]>,
+    ) -> ProgramResult;
+    fn init_if_needed(
+        account: &AccountInfo,
+        payer: &AccountInfo,
+        decimals: u8,
+        mint_authority: &[u8; 32],
+        freeze_authority: Option<&[u8; 32]>,
+    ) -> ProgramResult;
+}
+
+impl MintInit for MintAccount {
+    fn init(
+        account: &AccountInfo,
+        payer: &AccountInfo,
+        decimals: u8,
+        mint_authority: &[u8; 32],
+        freeze_authority: Option<&[u8; 32]>,
+    ) -> ProgramResult {
+        // Get required lamports for rent
+        let lamports = Rent::get()?.minimum_balance(pinocchio_token::state::Mint::LEN);
+
+        // Fund the account with the required lamports
+        CreateAccount {
+            from: payer,
+            to: account,
+            lamports,
+            space: pinocchio_token::state::Mint::LEN as u64,
+            owner: &pinocchio_token::ID,
+        }
+        .invoke()?;
+
+        InitializeMint2 {
+            mint: account,
+            decimals,
+            mint_authority,
+            freeze_authority,
+        }
+        .invoke()
+    }
+
+    fn init_if_needed(
+        account: &AccountInfo,
+        payer: &AccountInfo,
+        decimals: u8,
+        mint_authority: &[u8; 32],
+        freeze_authority: Option<&[u8; 32]>,
+    ) -> ProgramResult {
+        match Self::check(account) {
+            Ok(_) => Ok(()),
+            Err(_) => Self::init(account, payer, decimals, mint_authority, freeze_authority),
+        }
+    }
+}
+
+// Used for adding additional checks and functions to the token account (owner and data length checks, get_amount)
 pub struct TokenAccount;
 
-// this is to check the account is it a token account or not
 impl AccountCheck for TokenAccount {
     fn check(account: &AccountInfo) -> Result<(), ProgramError> {
         if !account.is_owned_by(&pinocchio_token::ID) {
-            return Err(ProgramError::InvalidAccountOwner);
-        };
+            return Err(PinocchioError::InvalidOwner.into());
+        }
 
-        if !account
+        if account
             .data_len()
             .ne(&pinocchio_token::state::TokenAccount::LEN)
         {
-            return Err(ProgramError::InvalidAccountData);
+            return Err(PinocchioError::InvalidAccountData.into());
         }
+
         Ok(())
     }
 }
 
 pub struct AssociatedTokenAccount;
 
-pub trait AssociatedTokenCheck {
+pub trait AssociatedTokenAccountCheck {
     fn check(
         account: &AccountInfo,
         authority: &AccountInfo,
@@ -108,14 +148,13 @@ pub trait AssociatedTokenCheck {
     ) -> Result<(), ProgramError>;
 }
 
-// this is to check whether is the token account is associated with a user or not
-impl AssociatedTokenCheck for AssociatedTokenAccount {
+impl AssociatedTokenAccountCheck for AssociatedTokenAccount {
     fn check(
         account: &AccountInfo,
         authority: &AccountInfo,
         mint: &AccountInfo,
     ) -> Result<(), ProgramError> {
-        TokenAccount::check(account);
+        TokenAccount::check(account)?;
 
         if find_program_address(
             &[authority.key(), &pinocchio_token::ID, mint.key()],
@@ -124,55 +163,8 @@ impl AssociatedTokenCheck for AssociatedTokenAccount {
         .0
         .ne(account.key())
         {
-            return Err(ProgramError::InvalidAccountOwner);
+            return Err(PinocchioError::InvalidAddress.into());
         }
-        Ok(())
-    }
-}
-
-pub struct ProgramAccount;
-
-impl AccountCheck for ProgramAccount {
-    fn check(account: &AccountInfo) -> Result<(), ProgramError> {
-        if !account.is_owned_by(&crate::ID) {
-            return Err(ProgramError::InvalidAccountOwner);
-        }
-
-        if account.data_len().ne(&crate::state::Escrow::LEN) {
-            return Err(ProgramError::InvalidAccountData);
-        }
-        Ok(())
-    }
-}
-
-pub trait ProgramAccountInit {
-    fn init<'a, T>(
-        payer: &AccountInfo,
-        account: &AccountInfo,
-        seeds: &[Seed<'a>],
-        space: usize,
-    ) -> Result<(), ProgramError>;
-}
-
-impl ProgramAccountInit for ProgramAccount {
-    fn init<'a, T>(
-        payer: &AccountInfo,
-        account: &AccountInfo,
-        seeds: &[Seed<'a>],
-        space: usize,
-    ) -> Result<(), ProgramError> {
-        let lamports = Rent::get()?.minimum_balance(space);
-
-        let signer = [Signer::from(seeds)];
-
-        CreateAccount {
-            from: payer,
-            to: account,
-            lamports,
-            owner: &crate::ID,
-            space: space as u64,
-        }
-        .invoke_signed(&signer)?;
 
         Ok(())
     }
@@ -186,8 +178,7 @@ pub trait AssociatedTokenAccountInit {
         owner: &AccountInfo,
         system_program: &AccountInfo,
         token_program: &AccountInfo,
-    ) -> Result<(), ProgramError>;
-
+    ) -> ProgramResult;
     fn init_if_needed(
         account: &AccountInfo,
         mint: &AccountInfo,
@@ -195,7 +186,7 @@ pub trait AssociatedTokenAccountInit {
         owner: &AccountInfo,
         system_program: &AccountInfo,
         token_program: &AccountInfo,
-    ) -> Result<(), ProgramError>;
+    ) -> ProgramResult;
 }
 
 impl AssociatedTokenAccountInit for AssociatedTokenAccount {
@@ -206,13 +197,13 @@ impl AssociatedTokenAccountInit for AssociatedTokenAccount {
         owner: &AccountInfo,
         system_program: &AccountInfo,
         token_program: &AccountInfo,
-    ) -> Result<(), ProgramError> {
+    ) -> ProgramResult {
         Create {
-            account,
             funding_account: payer,
+            account,
+            wallet: owner,
             mint,
             system_program,
-            wallet: owner,
             token_program,
         }
         .invoke()
@@ -225,8 +216,7 @@ impl AssociatedTokenAccountInit for AssociatedTokenAccount {
         owner: &AccountInfo,
         system_program: &AccountInfo,
         token_program: &AccountInfo,
-    ) -> Result<(), ProgramError> {
-        // checks if the account is created or not if not it creates
+    ) -> ProgramResult {
         match Self::check(account, payer, mint) {
             Ok(_) => Ok(()),
             Err(_) => Self::init(account, mint, payer, owner, system_program, token_program),
@@ -234,18 +224,69 @@ impl AssociatedTokenAccountInit for AssociatedTokenAccount {
     }
 }
 
+pub struct ProgramAccount;
+
+impl AccountCheck for ProgramAccount {
+    fn check(account: &AccountInfo) -> Result<(), ProgramError> {
+        if !account.is_owned_by(&crate::ID) {
+            return Err(PinocchioError::InvalidOwner.into());
+        }
+
+        if account.data_len().ne(&crate::state::Escrow::LEN) {
+            return Err(PinocchioError::InvalidAccountData.into());
+        }
+
+        Ok(())
+    }
+}
+
+pub trait ProgramAccountInit {
+    fn init<'a, T: Sized>(
+        payer: &AccountInfo,
+        account: &AccountInfo,
+        seeds: &[Seed<'a>],
+        space: usize,
+    ) -> ProgramResult;
+}
+
+impl ProgramAccountInit for ProgramAccount {
+    fn init<'a, T: Sized>(
+        payer: &AccountInfo,
+        account: &AccountInfo,
+        seeds: &[Seed<'a>],
+        space: usize,
+    ) -> ProgramResult {
+        // Get required lamports for rent
+        let lamports = Rent::get()?.minimum_balance(space);
+
+        // Create signer with seeds slice
+        let signer = [Signer::from(seeds)];
+
+        // Create the account
+        CreateAccount {
+            from: payer,
+            to: account,
+            lamports,
+            space: space as u64,
+            owner: &crate::ID,
+        }
+        .invoke_signed(&signer)?;
+
+        Ok(())
+    }
+}
+
+pub trait AccountClose {
+    fn close(account: &AccountInfo, destination: &AccountInfo) -> ProgramResult;
+}
+
 impl AccountClose for ProgramAccount {
-    fn close(account: &AccountInfo, destination: &AccountInfo) -> Result<(), ProgramError> {
-        // here 0xff represents as close or delete so now
-        // as we are assigning the value to the account it marks as close
-        // this code is in the scope because we can have the multiple imutable references but
-        // we need to have only on mutable reference so we are declaring that in a scope
+    fn close(account: &AccountInfo, destination: &AccountInfo) -> ProgramResult {
         {
             let mut data = account.try_borrow_mut_data()?;
             data[0] = 0xff;
-        };
+        }
 
-        // deducting the rent from the closing account and adding it to the authority account
         *destination.try_borrow_mut_lamports()? += *account.try_borrow_lamports()?;
         account.realloc(1, true)?;
         account.close()

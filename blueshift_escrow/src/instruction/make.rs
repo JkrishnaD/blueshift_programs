@@ -5,8 +5,7 @@ use pinocchio::{
 use pinocchio_token::instructions::Transfer;
 
 use crate::{
-    AccountCheck, AssociatedTokenAccount, AssociatedTokenAccountInit, AssociatedTokenCheck, Escrow,
-    MintInterface, ProgramAccount, ProgramAccountInit, SignerAccount,
+    AccountCheck, AssociatedTokenAccount, AssociatedTokenAccountCheck, AssociatedTokenAccountInit, Escrow, MintAccount, ProgramAccount, ProgramAccountInit, SignerAccount
 };
 
 // accounts which are required for the Make function
@@ -33,8 +32,8 @@ impl<'a> TryFrom<&'a [AccountInfo]> for MakeAccounts<'a> {
         };
 
         SignerAccount::check(maker)?;
-        MintInterface::check(mint_a)?;
-        MintInterface::check(mint_b)?;
+        MintAccount::check(mint_a)?;
+        MintAccount::check(mint_b)?;
         AssociatedTokenAccount::check(maker_ata_a, maker, mint_a)?;
         Ok(Self {
             maker,
@@ -106,7 +105,7 @@ impl<'a> TryFrom<(&'a [u8], &'a [AccountInfo])> for Make<'a> {
         let bump_bindings = [bump];
         let escrow_seeds = [
             Seed::from(b"escrow"),
-            Seed::from(accounts.maker.key()),
+            Seed::from(accounts.maker.key().as_ref()),
             Seed::from(&seed_bindings),
             Seed::from(&bump_bindings),
         ];
@@ -136,7 +135,9 @@ impl<'a> TryFrom<(&'a [u8], &'a [AccountInfo])> for Make<'a> {
 }
 
 impl<'a> Make<'a> {
-    fn process(&mut self) -> ProgramResult {
+    pub const DISCRIMINATOR: &'a u8 = &0;
+
+    pub fn process(&mut self) -> ProgramResult {
         let mut data = self.accounts.escrow.try_borrow_mut_data()?;
         let escrow = Escrow::load_mut(data.as_mut())?;
 

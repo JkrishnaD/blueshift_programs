@@ -1,14 +1,13 @@
 use pinocchio::{
     account_info::AccountInfo,
-    ProgramResult,
     instruction::{Seed, Signer},
     program_error::ProgramError,
+    ProgramResult,
 };
 use pinocchio_token::instructions::{CloseAccount, Transfer};
 
 use crate::{
-    AccountCheck, AccountClose, AssociatedTokenAccount, AssociatedTokenAccountInit,
-    AssociatedTokenCheck, Escrow, MintInterface, ProgramAccount, SignerAccount,
+    AccountCheck, AccountClose, AssociatedTokenAccount, AssociatedTokenAccountCheck, AssociatedTokenAccountInit, Escrow, MintAccount, ProgramAccount, SignerAccount
 };
 
 pub struct TakeAccounts<'a> {
@@ -35,10 +34,10 @@ impl<'a> TryFrom<&'a [AccountInfo]> for TakeAccounts<'a> {
             return Err(ProgramError::InvalidAccountData);
         };
 
-        SignerAccount::check(taker);
-        ProgramAccount::check(escrow);
-        MintInterface::check(mint_a);
-        MintInterface::check(mint_b);
+        SignerAccount::check(taker)?;
+        ProgramAccount::check(escrow)?;
+        MintAccount::check(mint_a)?;
+        MintAccount::check(mint_b)?;
         AssociatedTokenAccount::check(taker_ata_b, taker, mint_b)?;
         AssociatedTokenAccount::check(vault, escrow, mint_a)?;
 
@@ -95,6 +94,8 @@ impl<'a> TryFrom<&'a [AccountInfo]> for Take<'a> {
 }
 
 impl<'a> Take<'a> {
+    pub const DISCRIMINATOR: &'a u8 = &1;
+
     pub fn process(&mut self) -> ProgramResult {
         let data = self.accounts.escrow.try_borrow_data()?;
         let escrow = Escrow::load(&data)?;
@@ -114,7 +115,7 @@ impl<'a> Take<'a> {
         Transfer {
             from: self.accounts.taker_ata_b,
             to: self.accounts.maker_ata_b,
-            amount: escrow.recieve,
+            amount: escrow.receive,
             authority: self.accounts.taker,
         }
         .invoke()?;
@@ -123,7 +124,7 @@ impl<'a> Take<'a> {
         Transfer {
             from: self.accounts.vault,
             to: self.accounts.taker_ata_a,
-            amount: escrow.recieve,
+            amount: escrow.receive,
             authority: self.accounts.escrow,
         }
         .invoke_signed(&[signer_seeds.clone()])?;
