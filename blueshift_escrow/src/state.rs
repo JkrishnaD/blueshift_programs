@@ -22,7 +22,7 @@ impl Escrow {
         Ok(unsafe { &mut *core::mem::transmute::<*mut u8, *mut Self>(bytes.as_mut_ptr()) })
     }
 
-    pub fn load(bytes: &mut [u8]) -> Result<&Self, ProgramError> {
+    pub fn load(bytes: &[u8]) -> Result<&Self, ProgramError> {
         if bytes.len() != Escrow::LEN {
             return Err(ProgramError::InvalidAccountData);
         }
