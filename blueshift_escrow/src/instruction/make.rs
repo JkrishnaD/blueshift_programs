@@ -1,162 +1,395 @@
 use pinocchio::{
-    account_info::AccountInfo, instruction::Seed, program_error::ProgramError,
-    pubkey::find_program_address, ProgramResult,
+    ProgramResult,
+    account_info::AccountInfo,
+    instruction::{Seed, Signer},
+    program_error::ProgramError,
+    pubkey::find_program_address,
+    sysvars::{Sysvar, rent::Rent},
 };
-use pinocchio_token::instructions::Transfer;
+use pinocchio_associated_token_account::instructions::Create;
+use pinocchio_system::instructions::CreateAccount;
+use pinocchio_token::instructions::{InitializeAccount3, InitializeMint2};
 
-use crate::{
-    AccountCheck, AssociatedTokenAccount, AssociatedTokenAccountCheck, AssociatedTokenAccountInit, Escrow, MintAccount, ProgramAccount, ProgramAccountInit, SignerAccount
-};
+use crate::PinocchioError;
 
-// accounts which are required for the Make function
-pub struct MakeAccounts<'a> {
-    pub maker: &'a AccountInfo,
-    pub escrow: &'a AccountInfo,
-    pub mint_a: &'a AccountInfo,
-    pub mint_b: &'a AccountInfo,
-    pub maker_ata_a: &'a AccountInfo,
-    pub vault: &'a AccountInfo,
-    pub system_program: &'a AccountInfo,
-    pub token_program: &'a AccountInfo,
+pub trait AccountCheck {
+    fn check(account: &AccountInfo) -> Result<(), ProgramError>;
 }
 
-// tryform implementation which is used to verify the accounts if they are valid or not
-impl<'a> TryFrom<&'a [AccountInfo]> for MakeAccounts<'a> {
-    type Error = ProgramError;
+pub struct SignerAccount;
 
-    fn try_from(accounts: &'a [AccountInfo]) -> Result<Self, Self::Error> {
-        let [maker, escrow, mint_a, mint_b, maker_ata_a, vault, system_program, token_program, _] =
-            accounts
-        else {
-            return Err(ProgramError::InvalidAccountData);
-        };
-
-        SignerAccount::check(maker)?;
-        MintAccount::check(mint_a)?;
-        MintAccount::check(mint_b)?;
-        AssociatedTokenAccount::check(maker_ata_a, maker, mint_a)?;
-        Ok(Self {
-            maker,
-            escrow,
-            mint_a,
-            mint_b,
-            maker_ata_a,
-            vault,
-            system_program,
-            token_program,
-        })
+impl SignerAccount {
+    pub fn check(account: &AccountInfo) -> Result<(), ProgramError> {
+        if !account.is_signer() {
+            return Err(PinocchioError::NotSigner.into());
+        }
+        Ok(())
     }
 }
 
-// the instructions for the Make function
-pub struct MakeInstructionData {
-    pub seed: u64,
-    pub recieve: u64,
-    pub amount: u64,
-}
+pub struct SystemAccount;
 
-impl<'a> TryFrom<&'a [u8]> for MakeInstructionData {
-    type Error = ProgramError;
+impl SystemAccount {
+    pub fn check(account: &AccountInfo) -> Result<(), ProgramError> {
+        if !account.is_owned_by(&pinocchio_system::ID) {
+            return Err(PinocchioError::InvalidOwner.into());
+        }
 
-    fn try_from(data: &'a [u8]) -> Result<Self, Self::Error> {
-        if data.len() != size_of::<u64>() * 3 {
-            return Err(ProgramError::InvalidAccountData);
-        };
-
-        let seed = u64::from_le_bytes(data[0..8].try_into().unwrap());
-        let recieve = u64::from_le_bytes(data[8..16].try_into().unwrap());
-        let amount = u64::from_le_bytes(data[16..24].try_into().unwrap());
-
-        if amount == 0 {
-            return Err(ProgramError::InvalidInstructionData);
-        };
-
-        Ok(Self {
-            seed,
-            recieve,
-            amount,
-        })
+        Ok(())
     }
 }
 
-pub struct Make<'a> {
-    pub accounts: MakeAccounts<'a>,
-    pub instructions: MakeInstructionData,
-    pub bump: u8,
-}
+// TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb
+pub const TOKEN_2022_PROGRAM_ID: [u8; 32] = [
+    0x06, 0xdd, 0xf6, 0xe1, 0xee, 0x75, 0x8f, 0xde, 0x18, 0x42, 0x5d, 0xbc, 0xe4, 0x6c, 0xcd, 0xda,
+    0xb6, 0x1a, 0xfc, 0x4d, 0x83, 0xb9, 0x0d, 0x27, 0xfe, 0xbd, 0xf9, 0x28, 0xd8, 0xa1, 0x8b, 0xfc,
+];
 
-impl<'a> TryFrom<(&'a [u8], &'a [AccountInfo])> for Make<'a> {
-    type Error = ProgramError;
+const TOKEN_2022_ACCOUNT_DISCRIMINATOR_OFFSET: usize = 165;
+pub const TOKEN_2022_MINT_DISCRIMINATOR: u8 = 0x01;
+pub const TOKEN_2022_TOKEN_ACCOUNT_DISCRIMINATOR: u8 = 0x02;
 
-    fn try_from((data, accounts): (&'a [u8], &'a [AccountInfo])) -> Result<Self, Self::Error> {
-        let accounts = MakeAccounts::try_from(accounts)?;
-        let instructions = MakeInstructionData::try_from(data)?;
+pub struct MintInterface;
 
-        let (_, bump) = find_program_address(
-            &[
-                b"escrow",
-                accounts.maker.key(),
-                &instructions.seed.to_le_bytes(),
-            ],
-            &crate::ID,
-        );
+impl AccountCheck for MintInterface {
+    fn check(account: &AccountInfo) -> Result<(), ProgramError> {
+        if !account.is_owned_by(&TOKEN_2022_PROGRAM_ID) {
+            if !account.is_owned_by(&pinocchio_token::ID) {
+                return Err(PinocchioError::InvalidOwner.into());
+            } else {
+                if account.data_len().ne(&pinocchio_token::state::Mint::LEN) {
+                    return Err(PinocchioError::InvalidAccountData.into());
+                }
+            }
+        } else {
+            let data = account.try_borrow_data()?;
 
-        let seed_bindings = instructions.seed.to_le_bytes();
-        let bump_bindings = [bump];
-        let escrow_seeds = [
-            Seed::from(b"escrow"),
-            Seed::from(accounts.maker.key().as_ref()),
-            Seed::from(&seed_bindings),
-            Seed::from(&bump_bindings),
-        ];
+            if data.len().ne(&pinocchio_token::state::Mint::LEN) {
+                if data[TOKEN_2022_ACCOUNT_DISCRIMINATOR_OFFSET].ne(&TOKEN_2022_MINT_DISCRIMINATOR)
+                {
+                    return Err(PinocchioError::InvalidAccountData.into());
+                }
+            }
+        }
 
-        ProgramAccount::init::<Escrow>(
-            accounts.maker,
-            accounts.escrow,
-            &escrow_seeds,
-            Escrow::LEN,
-        )?;
-
-        AssociatedTokenAccount::init(
-            accounts.vault,
-            accounts.mint_a,
-            accounts.maker,
-            accounts.vault,
-            accounts.system_program,
-            accounts.token_program,
-        )?;
-
-        Ok(Self {
-            accounts,
-            instructions,
-            bump,
-        })
+        Ok(())
     }
 }
 
-impl<'a> Make<'a> {
-    pub const DISCRIMINATOR: &'a u8 = &0;
+pub trait MintInit {
+    fn init(
+        account: &AccountInfo,
+        payer: &AccountInfo,
+        decimals: u8,
+        mint_authority: &[u8; 32],
+        freeze_authority: Option<&[u8; 32]>,
+        token_program: &AccountInfo,
+    ) -> ProgramResult;
+    fn init_if_needed(
+        account: &AccountInfo,
+        payer: &AccountInfo,
+        decimals: u8,
+        mint_authority: &[u8; 32],
+        freeze_authority: Option<&[u8; 32]>,
+        token_program: &AccountInfo,
+    ) -> ProgramResult;
+}
 
-    pub fn process(&mut self) -> ProgramResult {
-        let mut data = self.accounts.escrow.try_borrow_mut_data()?;
-        let escrow = Escrow::load_mut(data.as_mut())?;
+impl MintInit for MintInterface {
+    fn init(
+        account: &AccountInfo,
+        payer: &AccountInfo,
+        decimals: u8,
+        mint_authority: &[u8; 32],
+        freeze_authority: Option<&[u8; 32]>,
+        token_program: &AccountInfo,
+    ) -> ProgramResult {
+        // Get required lamports for rent
+        let lamports = Rent::get()?.minimum_balance(pinocchio_token::state::Mint::LEN);
 
-        escrow.set_inner(
-            self.instructions.seed,
-            *self.accounts.maker.key(),
-            *self.accounts.mint_a.key(),
-            *self.accounts.mint_b.key(),
-            self.instructions.recieve,
-            [self.bump],
-        );
-
-        Transfer {
-            from: self.accounts.maker_ata_a,
-            amount: self.instructions.amount,
-            authority: self.accounts.maker,
-            to: self.accounts.vault,
+        // Fund the account with the required lamports
+        CreateAccount {
+            from: payer,
+            to: account,
+            lamports,
+            space: pinocchio_token::state::Mint::LEN as u64,
+            owner: &token_program.key(),
         }
         .invoke()?;
+
+        InitializeMint2 {
+            mint: account,
+            decimals,
+            mint_authority,
+            freeze_authority,
+        }
+        .invoke()
+    }
+
+    fn init_if_needed(
+        account: &AccountInfo,
+        payer: &AccountInfo,
+        decimals: u8,
+        mint_authority: &[u8; 32],
+        freeze_authority: Option<&[u8; 32]>,
+        token_program: &AccountInfo,
+    ) -> ProgramResult {
+        match Self::check(account) {
+            Ok(_) => Ok(()),
+            Err(_) => Self::init(
+                account,
+                payer,
+                decimals,
+                mint_authority,
+                freeze_authority,
+                token_program,
+            ),
+        }
+    }
+}
+
+pub struct TokenAccountInterface;
+
+impl AccountCheck for TokenAccountInterface {
+    fn check(account: &AccountInfo) -> Result<(), ProgramError> {
+        if !account.is_owned_by(&TOKEN_2022_PROGRAM_ID) {
+            if !account.is_owned_by(&pinocchio_token::ID) {
+                return Err(PinocchioError::InvalidOwner.into());
+            } else {
+                if account
+                    .data_len()
+                    .ne(&pinocchio_token::state::TokenAccount::LEN)
+                {
+                    return Err(PinocchioError::InvalidAccountData.into());
+                }
+            }
+        } else {
+            let data = account.try_borrow_data()?;
+
+            if data.len().ne(&pinocchio_token::state::TokenAccount::LEN) {
+                return Err(PinocchioError::InvalidAccountData.into());
+            }
+        }
+
         Ok(())
+    }
+}
+
+pub trait AccountInit {
+    fn init(
+        account: &AccountInfo,
+        mint: &AccountInfo,
+        payer: &AccountInfo,
+        owner: &[u8; 32],
+        token_program: &AccountInfo,
+    ) -> ProgramResult;
+    fn init_if_needed(
+        account: &AccountInfo,
+        mint: &AccountInfo,
+        payer: &AccountInfo,
+        owner: &[u8; 32],
+        token_program: &AccountInfo,
+    ) -> ProgramResult;
+}
+
+impl AccountInit for TokenAccountInterface {
+    fn init(
+        account: &AccountInfo,
+        mint: &AccountInfo,
+        payer: &AccountInfo,
+        owner: &[u8; 32],
+        token_program: &AccountInfo,
+    ) -> ProgramResult {
+        // Get required lamports for rent
+        let lamports = Rent::get()?.minimum_balance(pinocchio_token::state::TokenAccount::LEN);
+
+        // Fund the account with the required lamports
+        CreateAccount {
+            from: payer,
+            to: account,
+            lamports,
+            space: pinocchio_token::state::TokenAccount::LEN as u64,
+            owner: &token_program.key(),
+        }
+        .invoke()?;
+
+        // Initialize the Token Account
+        InitializeAccount3 {
+            account,
+            mint,
+            owner,
+        }
+        .invoke()
+    }
+
+    fn init_if_needed(
+        account: &AccountInfo,
+        mint: &AccountInfo,
+        payer: &AccountInfo,
+        owner: &[u8; 32],
+        token_program: &AccountInfo,
+    ) -> ProgramResult {
+        match Self::check(account) {
+            Ok(_) => Ok(()),
+            Err(_) => Self::init(account, mint, payer, owner, token_program),
+        }
+    }
+}
+
+pub trait AssociatedTokenAccountCheck {
+    fn check(
+        account: &AccountInfo,
+        authority: &AccountInfo,
+        mint: &AccountInfo,
+        token_program: &AccountInfo,
+    ) -> Result<(), ProgramError>;
+}
+
+pub trait AssociatedTokenAccountInit {
+    fn init(
+        account: &AccountInfo,
+        mint: &AccountInfo,
+        payer: &AccountInfo,
+        owner: &AccountInfo,
+        system_program: &AccountInfo,
+        token_program: &AccountInfo,
+    ) -> Result<(), ProgramError>;
+
+    fn init_if_needed(
+        account: &AccountInfo,
+        mint: &AccountInfo,
+        payer: &AccountInfo,
+        owner: &AccountInfo,
+        system_program: &AccountInfo,
+        token_program: &AccountInfo,
+    ) -> Result<(), ProgramError>;
+}
+pub struct AssociatedTokenAccount;
+
+impl AssociatedTokenAccountCheck for AssociatedTokenAccount {
+    fn check(
+        account: &AccountInfo,
+        authority: &AccountInfo,
+        mint: &AccountInfo,
+        token_program: &AccountInfo,
+    ) -> Result<(), ProgramError> {
+        TokenAccountInterface::check(account)?;
+
+        if find_program_address(
+            &[authority.key(), token_program.key(), mint.key()],
+            &pinocchio_associated_token_account::ID,
+        )
+        .0
+        .ne(account.key())
+        {
+            return Err(PinocchioError::InvalidAddress.into());
+        }
+
+        Ok(())
+    }
+}
+
+impl AssociatedTokenAccountInit for AssociatedTokenAccount {
+    fn init(
+        account: &AccountInfo,
+        mint: &AccountInfo,
+        payer: &AccountInfo,
+        owner: &AccountInfo,
+        system_program: &AccountInfo,
+        token_program: &AccountInfo,
+    ) -> ProgramResult {
+        Create {
+            funding_account: payer,
+            account,
+            wallet: owner,
+            mint,
+            system_program,
+            token_program,
+        }
+        .invoke()
+    }
+
+    fn init_if_needed(
+        account: &AccountInfo,
+        mint: &AccountInfo,
+        payer: &AccountInfo,
+        owner: &AccountInfo,
+        system_program: &AccountInfo,
+        token_program: &AccountInfo,
+    ) -> ProgramResult {
+        match Self::check(account, payer, mint, token_program) {
+            Ok(_) => Ok(()),
+            Err(_) => Self::init(account, mint, payer, owner, system_program, token_program),
+        }
+    }
+}
+
+pub struct ProgramAccount;
+
+impl AccountCheck for ProgramAccount {
+    fn check(account: &AccountInfo) -> Result<(), ProgramError> {
+        if !account.is_owned_by(&crate::ID) {
+            return Err(PinocchioError::InvalidOwner.into());
+        }
+
+        if account.data_len().ne(&crate::state::Escrow::LEN) {
+            return Err(PinocchioError::InvalidAccountData.into());
+        }
+
+        Ok(())
+    }
+}
+
+pub trait ProgramAccountInit {
+    fn init<'a, T: Sized>(
+        payer: &AccountInfo,
+        account: &AccountInfo,
+        seeds: &[Seed<'a>],
+        space: usize,
+    ) -> ProgramResult;
+}
+
+impl ProgramAccountInit for ProgramAccount {
+    fn init<'a, T: Sized>(
+        payer: &AccountInfo,
+        account: &AccountInfo,
+        seeds: &[Seed<'a>],
+        space: usize,
+    ) -> ProgramResult {
+        // Get required lamports for rent
+        let lamports = Rent::get()?.minimum_balance(space);
+
+        // Create signer with seeds slice
+        let signer = [Signer::from(seeds)];
+
+        // Create the account
+        CreateAccount {
+            from: payer,
+            to: account,
+            lamports,
+            space: space as u64,
+            owner: &crate::ID,
+        }
+        .invoke_signed(&signer)?;
+
+        Ok(())
+    }
+}
+
+pub trait AccountClose {
+    fn close(account: &AccountInfo, destination: &AccountInfo) -> ProgramResult;
+}
+
+impl AccountClose for ProgramAccount {
+    fn close(account: &AccountInfo, destination: &AccountInfo) -> ProgramResult {
+        {
+            let mut data = account.try_borrow_mut_data()?;
+            data[0] = 0xff;
+        }
+
+        *destination.try_borrow_mut_lamports()? += *account.try_borrow_lamports()?;
+        // *account.try_borrow_mut_lamports()? = 0;
+        account.resize(1)?;
+        account.close()
     }
 }
