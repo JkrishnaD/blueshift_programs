@@ -201,7 +201,6 @@ impl<'a> Loan<'a> {
             return Err(ProgramError::InvalidInstructionData);
         }
 
-        drop(loan_data);
         Ok(())
     }
 }

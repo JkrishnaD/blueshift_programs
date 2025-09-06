@@ -72,7 +72,7 @@ impl<'a> Repay<'a> {
         unsafe {
             *self.accounts.borrower.borrow_mut_lamports_unchecked() +=
                 *self.accounts.loan.borrow_lamports_unchecked();
-            self.accounts.loan.close_unchecked();
+            *self.accounts.loan.borrow_mut_lamports_unchecked() = 0;
         }
 
         drop(loan_data);
