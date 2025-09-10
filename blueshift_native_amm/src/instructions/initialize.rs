@@ -101,6 +101,8 @@ impl<'a> TryFrom<(&'a [AccountInfo], &'a [u8])> for InitializeConfig<'a> {
 }
 
 impl<'a> InitializeConfig<'a> {
+    pub const DISCRIMINATOR: &'a u8 = &0;
+
     pub fn process(&self) -> ProgramResult {
         // signers check
         SignerAccount::check(self.accounts.authority)?;
@@ -111,26 +113,32 @@ impl<'a> InitializeConfig<'a> {
             return Err(ProgramError::InvalidAccountData);
         }
 
-        let seeds = [
-            Seed::from(b"config"),
-            Seed::from(self.accounts.authority.key()),
-        ];
         let seeds_slice = &[b"config", self.accounts.authority.key().as_ref()];
 
         let (config_pda, bump) = find_program_address(seeds_slice, &crate::ID);
 
-        let lp_seed = [b"lp_mint", self.accounts.lp_mint.key().as_ref()];
+        let lp_seed = [
+            b"lp_mint",
+            self.accounts.mint_x.key().as_ref(),
+            self.accounts.mint_y.key().as_ref(),
+        ];
         let (_lp_pda, lp_bump) = find_program_address(&lp_seed, &crate::ID);
 
         if &config_pda != self.accounts.config.key() {
             return Err(ProgramError::InvalidAccountData);
         };
 
+        let config_seeds = [
+            Seed::from(b"config"),
+            Seed::from(self.accounts.mint_x.key()),
+            Seed::from(self.accounts.mint_y.key()),
+        ];
+
         // create the config account
         ProgramAccount::init::<Config>(
             self.accounts.authority,
             self.accounts.config,
-            &seeds,
+            &config_seeds,
             Config::LEN,
         )?;
 
