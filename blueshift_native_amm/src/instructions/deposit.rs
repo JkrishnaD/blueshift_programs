@@ -15,7 +15,6 @@ use crate::{
         AccountCheck, AssociatedTokenAccount, AssociatedTokenAccountCheck,
         AssociatedTokenAccountInit, MintInterface, SignerAccount,
     },
-    state::Config,
 };
 
 pub struct DepositAccounts<'a> {
@@ -31,8 +30,8 @@ pub struct DepositAccounts<'a> {
     pub vault_y: &'a AccountInfo,
     pub vault_lp: &'a AccountInfo,
 
-    pub user_x: &'a AccountInfo,
-    pub user_y: &'a AccountInfo,
+    pub user_x_ata: &'a AccountInfo,
+    pub user_y_ata: &'a AccountInfo,
 
     pub token_program: &'a AccountInfo,
     pub system_program: &'a AccountInfo,
@@ -43,7 +42,7 @@ impl<'a> TryFrom<&'a [AccountInfo]> for DepositAccounts<'a> {
     type Error = ProgramError;
 
     fn try_from(accounts: &'a [AccountInfo]) -> Result<Self, Self::Error> {
-        let [user, mint_x, mint_y, lp_mint, config, vault_x, vault_y, user_x, user_y, vault_lp, token_program, system_program, associated_token_program] =
+        let [user, mint_x, mint_y, lp_mint, config, vault_x, vault_y, user_x_ata, user_y_ata, vault_lp, token_program, system_program, associated_token_program] =
             accounts
         else {
             return Err(ProgramError::InvalidAccountData);
@@ -54,8 +53,8 @@ impl<'a> TryFrom<&'a [AccountInfo]> for DepositAccounts<'a> {
         MintInterface::check(mint_x)?;
         MintInterface::check(mint_y)?;
 
-        AssociatedTokenAccount::check(user_x, user, mint_x)?;
-        AssociatedTokenAccount::check(user_y, user, mint_y)?;
+        AssociatedTokenAccount::check(user_x_ata, user, mint_x)?;
+        AssociatedTokenAccount::check(user_y_ata, user, mint_y)?;
 
         let seeds = &[b"lp_mint", config.key().as_ref()];
         let (expected_lp_mint, _) = find_program_address(seeds, &crate::ID);
@@ -76,8 +75,8 @@ impl<'a> TryFrom<&'a [AccountInfo]> for DepositAccounts<'a> {
             config,
             vault_x,
             vault_y,
-            user_x,
-            user_y,
+            user_x_ata,
+            user_y_ata,
             vault_lp,
             token_program,
             system_program,
@@ -263,7 +262,7 @@ impl<'a> Deposit<'a> {
         }
 
         Transfer {
-            from: self.accounts.user_x,
+            from: self.accounts.user_x_ata,
             to: self.accounts.vault_x,
             amount: self.instructions.mint_x,
             authority: self.accounts.user,
@@ -271,7 +270,7 @@ impl<'a> Deposit<'a> {
         .invoke()?;
 
         Transfer {
-            from: self.accounts.user_y,
+            from: self.accounts.user_y_ata,
             to: self.accounts.vault_y,
             amount: self.instructions.mint_y,
             authority: self.accounts.user,
